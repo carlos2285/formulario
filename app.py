@@ -13,11 +13,11 @@ st.write(
     "3) Completa el resto de información manualmente."
 )
 
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 # Utilidades de preprocesamiento
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 def preparar_imagen(img: Image.Image) -> Image.Image:
-    \"\"\"Rota si viene vertical y pasa a escala de grises.\"\"\"
+    # Rota si viene vertical y pasa a escala de grises
     if img.height > img.width:
         img = img.rotate(90, expand=True)
     img = img.convert("L")
@@ -25,7 +25,7 @@ def preparar_imagen(img: Image.Image) -> Image.Image:
 
 
 def convertir_fecha_mrz(fecha6: str):
-    \"\"\"Convierte fecha YYMMDD de MRZ a dd/mm/yyyy (aprox).\"\"\"
+    # Convierte fecha YYMMDD de MRZ a dd/mm/yyyy (aprox).
     try:
         yy = int(fecha6[0:2])
         mm = int(fecha6[2:4])
@@ -40,11 +40,11 @@ def convertir_fecha_mrz(fecha6: str):
         return None
 
 
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 # Lectura de MRZ (reverso)
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 def parsear_mrz(texto: str) -> dict:
-    \"\"\"Parsea las líneas MRZ del reverso para extraer nombre, número, fechas, sexo.\"\"\"
+    # Parsear MRZ del reverso para extraer nombre, número, fechas, sexo
     datos = {
         "numero_doc": None,
         "fecha_nacimiento": None,
@@ -73,16 +73,18 @@ def parsear_mrz(texto: str) -> dict:
         m_nac = re.search(r"(\d{6})[MF<]", l2)
         if m_nac:
             datos["fecha_nacimiento"] = convertir_fecha_mrz(m_nac.group(1))
+
         m_sexo = re.search(r"\d{6}([MF<])", l2)
         if m_sexo:
             s = m_sexo.group(1)
             if s in ("M", "F"):
                 datos["sexo"] = s
+
         m_exp = re.search(r"\d{6}[MF<](\d{6})", l2)
         if m_exp:
             datos["fecha_expiracion"] = convertir_fecha_mrz(m_exp.group(1))
 
-    # Línea 3: apellidos y nombres separados por << y < como espacios
+    # Línea 3: apellidos y nombres
     if len(mrz) >= 3:
         l3 = mrz[2]
         partes = l3.split("<<")
@@ -95,9 +97,9 @@ def parsear_mrz(texto: str) -> dict:
     return datos
 
 
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 # OCR reverso: dirección, residencia, etc.
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 def extraer_desde_reverso(img: Image.Image) -> dict:
     datos = {}
 
@@ -114,7 +116,7 @@ def extraer_desde_reverso(img: Image.Image) -> dict:
 
     direccion = None
     departamento = None
-    distrito = None  # usaremos municipio/distrito según versión
+    distrito = None  # municipio/distrito según versión
 
     lineas = [l.strip() for l in texto_completo.splitlines() if l.strip()]
 
@@ -136,7 +138,7 @@ def extraer_desde_reverso(img: Image.Image) -> dict:
             elif i + 1 < len(lineas):
                 departamento = lineas[i + 1].strip()
 
-        # En la versión vieja es "Municipio / City", en la nueva "Distrito"
+        # Versión vieja: Municipio / City; nueva: Distrito
         if ("municipio" in low or "distrito" in low or "city" in low) and distrito is None:
             if ":" in linea:
                 distrito = linea.split(":", 1)[1].strip()
@@ -150,9 +152,9 @@ def extraer_desde_reverso(img: Image.Image) -> dict:
     return datos
 
 
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 # OCR frente: número DUI y nombres si son más legibles allí
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 def extraer_desde_frente(img: Image.Image) -> dict:
     datos = {}
 
@@ -167,7 +169,6 @@ def extraer_desde_frente(img: Image.Image) -> dict:
     numero_doc = None
 
     for linea in lineas:
-        # DUI con guión
         m_dui = re.search(r"\b\d{8}-\d\b", linea)
         if m_dui:
             numero_doc = m_dui.group(0)
@@ -193,9 +194,8 @@ def extraer_desde_frente(img: Image.Image) -> dict:
 
 
 def combinar_datos(front: dict, back: dict) -> dict:
-    \"\"\"Combina datos de frente y reverso dando prioridad al MRZ.\"\"\"
+    # Combina datos de frente y reverso dando prioridad al MRZ
     datos = {}
-
     datos.update(front)
     for k, v in back.items():
         if k in ["numero_doc", "apellidos", "nombres"]:
@@ -207,9 +207,9 @@ def combinar_datos(front: dict, back: dict) -> dict:
     return datos
 
 
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 # Carga de imágenes
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 col1, col2 = st.columns(2)
 with col1:
     frente_file = st.file_uploader("Frente del DUI", type=["jpg", "jpeg", "png"], key="frente")
@@ -233,19 +233,23 @@ if st.button("Leer datos desde el DUI"):
         front_data = extraer_desde_frente(img_front)
         back_data = extraer_desde_reverso(img_back)
         datos_extraidos = combinar_datos(front_data, back_data)
-
         st.success("Lectura completada. Verifica los datos en el formulario de abajo.")
 
-# --------------------------------------------------------------------
+
+# ---------------------------------------------------------
 # FORMULARIO PRINCIPAL
-# --------------------------------------------------------------------
+# ---------------------------------------------------------
 st.markdown("---")
 st.subheader("Información de DUI (para procesos administrativos / seguros)")
 
-def valor_inicial(campo: str, por_defecto: str = "") -> str:
-    return (datos_extraidos.get(campo) or por_defecto).strip() if datos_extraidos else por_defecto
 
-# Construir Nombre Completo a partir de apellidos + nombres si existe
+def valor_inicial(campo: str, por_defecto: str = "") -> str:
+    if not datos_extraidos:
+        return por_defecto
+    return (datos_extraidos.get(campo) or por_defecto).strip()
+
+
+# Construir Nombre Completo a partir de apellidos + nombres
 nombre_completo_auto = ""
 if datos_extraidos:
     ap = datos_extraidos.get("apellidos") or ""
@@ -256,7 +260,7 @@ if datos_extraidos:
 numero_dui_raw = valor_inicial("numero_doc")
 numero_dui_sin = numero_dui_raw.replace("-", "") if numero_dui_raw else ""
 
-# Campos que deben venir preferentemente del DUI
+# Campos que vienen del DUI
 nombre_completo = st.text_input("Nombre Completo", value=nombre_completo_auto)
 numero_dui = st.text_input("Número de DUI (sin guiones)", value=numero_dui_sin)
 direccion_completa = st.text_input("Dirección completa", value=valor_inicial("direccion"))
@@ -294,4 +298,4 @@ if st.button("Guardar registro (demo)"):
 
     st.success("Registro 'guardado' (solo demostración).")
     st.json(registro)
-    st.info("En una versión productiva, aquí se podría guardar en una base de datos o archivo CSV/Excel.")
+    st.info("En producción aquí se guardaría en una base de datos o archivo CSV/Excel.")
