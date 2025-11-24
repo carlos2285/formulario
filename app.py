@@ -10,18 +10,42 @@ st.title("Captura de datos desde DUI (El Salvador)")
 st.write(
     "1) Sube las imágenes del **frente** y **reverso** del DUI (nuevo o antiguo).\n"
     "2) La aplicación intentará leer automáticamente los datos que vienen en el documento.\n"
-    "3) Completa el resto de información manualmente."
+    "3) Completa el resto de información manualmente.\n\n"
+    "**Tip:** Para mejores resultados, procura que el DUI ocupe la mayor parte de la foto y que el texto quede lo más horizontal posible."
 )
 
 # ---------------------------------------------------------
-# Utilidades de preprocesamiento
+# Utilidades de preprocesamiento y OCR robusto
 # ---------------------------------------------------------
-def preparar_imagen(img: Image.Image) -> Image.Image:
-    # Rota si viene vertical y pasa a escala de grises
-    if img.height > img.width:
-        img = img.rotate(90, expand=True)
-    img = img.convert("L")
-    return img
+def a_escala_grises(img: Image.Image) -> Image.Image:
+    return img.convert("L")
+
+
+def ocr_mejor_orientacion(img: Image.Image, lang: str = "spa+eng"):
+    """
+    Prueba varias orientaciones (0°, 90°, 270°) y se queda con la que
+    genera más caracteres alfanuméricos (heurística simple).
+    Devuelve (texto, imagen_usada).
+    """
+    variantes = []
+    base = a_escala_grises(img)
+    variantes.append(base)
+    variantes.append(base.rotate(90, expand=True))
+    variantes.append(base.rotate(270, expand=True))
+
+    mejor_texto = ""
+    mejor_img = base
+    mejor_score = -1
+
+    for im in variantes:
+        txt = pytesseract.image_to_string(im, lang=lang)
+        score = len(re.findall(r"[A-Z0-9]", txt, flags=re.IGNORECASE))
+        if score > mejor_score:
+            mejor_score = score
+            mejor_texto = txt
+            mejor_img = im
+
+    return mejor_texto, mejor_img
 
 
 def convertir_fecha_mrz(fecha6: str):
@@ -38,6 +62,34 @@ def convertir_fecha_mrz(fecha6: str):
         return dt.strftime("%d/%m/%Y")
     except Exception:
         return None
+
+
+# ---------------------------------------------------------
+# Limpieza de campos (post-OCR)
+# ---------------------------------------------------------
+def limpiar_dui(dui_raw: str) -> str:
+    """Deja solo dígitos y recorta a 9 posiciones."""
+    if not dui_raw:
+        return ""
+    solo_digitos = re.sub(r"\D", "", dui_raw)
+    # muchos DUI antiguos traen 9 dígitos; si hay más, recortamos
+    return solo_digitos[:9]
+
+
+def limpiar_linea_localizacion(texto: str) -> str:
+    """
+    Quita basura típica que viene después del nombre de departamento/distrito,
+    como 'Código de Zona', 'Zip Code', pipes, '<', etc.
+    """
+    if not texto:
+        return ""
+    t = texto
+    cortes = ["codigo de zona", "código de zona", "zip code", "zip", "|", "<"]
+    for c in cortes:
+        idx = t.lower().find(c)
+        if idx != -1:
+            t = t[:idx]
+    return t.strip(" ,;:-")
 
 
 # ---------------------------------------------------------
@@ -62,7 +114,7 @@ def parsear_mrz(texto: str) -> dict:
 
     # Línea 1: IDSLV + número
     l1 = mrz[0]
-    m_doc = re.search(r"ID[ A-Z]{2,3}([0-9A-Z<]{8,12})", l1)
+    m_doc = re.search(r"ID[ A-Z]{2,3}([0-9A-Z<]{8,15})", l1)
     if m_doc:
         numero_doc = m_doc.group(1).replace("<", "")
         datos["numero_doc"] = numero_doc
@@ -103,14 +155,13 @@ def parsear_mrz(texto: str) -> dict:
 def extraer_desde_reverso(img: Image.Image) -> dict:
     datos = {}
 
-    img_prep = preparar_imagen(img)
-    texto_completo = pytesseract.image_to_string(img_prep, lang="spa+eng")
+    texto_completo, img_usable = ocr_mejor_orientacion(img, lang="spa+eng")
     datos["texto_reverso_raw"] = texto_completo
 
-    # Recorte MRZ (parte inferior)
-    w, h = img_prep.size
-    mrz_region = img_prep.crop((0, int(h * 0.6), w, h))
-    texto_mrz = pytesseract.image_to_string(mrz_region, lang="eng")
+    # Recorte MRZ (parte inferior) sobre la imagen ya orientada
+    w, h = img_usable.size
+    mrz_region = img_usable.crop((0, int(h * 0.6), w, h))
+    texto_mrz, _ = ocr_mejor_orientacion(mrz_region, lang="eng")
     datos_mrz = parsear_mrz(texto_mrz)
     datos.update(datos_mrz)
 
@@ -146,8 +197,8 @@ def extraer_desde_reverso(img: Image.Image) -> dict:
                 distrito = lineas[i + 1].strip()
 
     datos["direccion"] = direccion
-    datos["departamento_residencia"] = departamento
-    datos["distrito_residencia"] = distrito
+    datos["departamento_residencia"] = limpiar_linea_localizacion(departamento)
+    datos["distrito_residencia"] = limpiar_linea_localizacion(distrito)
 
     return datos
 
@@ -158,8 +209,7 @@ def extraer_desde_reverso(img: Image.Image) -> dict:
 def extraer_desde_frente(img: Image.Image) -> dict:
     datos = {}
 
-    img_prep = preparar_imagen(img)
-    texto = pytesseract.image_to_string(img_prep, lang="spa+eng")
+    texto, img_usable = ocr_mejor_orientacion(img, lang="spa+eng")
     datos["texto_frente_raw"] = texto
 
     lineas = [l.strip() for l in texto.splitlines() if l.strip()]
@@ -235,6 +285,12 @@ if st.button("Leer datos desde el DUI"):
         datos_extraidos = combinar_datos(front_data, back_data)
         st.success("Lectura completada. Verifica los datos en el formulario de abajo.")
 
+        with st.expander("Ver texto detectado (debug)"):
+            st.subheader("Frente (OCR)")
+            st.text(front_data.get("texto_frente_raw", ""))
+            st.subheader("Reverso (OCR)")
+            st.text(back_data.get("texto_reverso_raw", ""))
+
 
 # ---------------------------------------------------------
 # FORMULARIO PRINCIPAL
@@ -256,9 +312,9 @@ if datos_extraidos:
     no = datos_extraidos.get("nombres") or ""
     nombre_completo_auto = (ap + " " + no).strip()
 
-# Número de DUI sin guiones
+# Número de DUI sin guiones (limpio)
 numero_dui_raw = valor_inicial("numero_doc")
-numero_dui_sin = numero_dui_raw.replace("-", "") if numero_dui_raw else ""
+numero_dui_sin = limpiar_dui(numero_dui_raw)
 
 # Campos que vienen del DUI
 nombre_completo = st.text_input("Nombre Completo", value=nombre_completo_auto)
